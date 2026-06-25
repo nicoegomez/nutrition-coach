@@ -1,0 +1,25 @@
+{
+  "short_name": "Coach",
+  "name": "Coach — Nutrición Personal",
+  "description": "Tu coach nutricional personal con IA",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#3d5a40",
+  "background_color": "#faf7f2",
+  "lang": "es"
+}
