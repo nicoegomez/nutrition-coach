@@ -139,7 +139,7 @@ export default function App() {
     setTimeout(() => {
       if (p) { setProfile(p); setScreen("app"); }
       else setScreen("onboarding");
-    }, 1800);
+    }, 3000);
   }, []);
 
   function showToast(text, type = "success") {
@@ -207,31 +207,62 @@ function GlobalStyles() {
       .animate-slide-up { animation: slideUp 0.4s ease forwards; }
       .animate-fade-in  { animation: fadeIn 0.3s ease forwards; }
       .animate-pop-in   { animation: popIn 0.25s ease forwards; }
+      @keyframes leafGrow { from { opacity: 0; transform: scale(0.4) rotate(-12deg); } to { opacity: 1; transform: scale(1) rotate(0); } }
+      @keyframes drawLine { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+      @keyframes dotPop   { 0% { opacity: 0; transform: scale(0); } 70% { opacity: 1; transform: scale(1.6); } 100% { opacity: 1; transform: scale(1); } }
+      @keyframes haloPulse { 0%,100% { transform: scale(1); opacity: 0.25; } 50% { transform: scale(1.15); opacity: 0.4; } }
+      @keyframes loadBar { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+      .logo-leaf  { animation: leafGrow 0.7s cubic-bezier(.2,.8,.2,1) both; }
+      .logo-vein  { stroke-dasharray: 1; stroke-dashoffset: 1; animation: drawLine 0.6s ease 0.5s forwards; }
+      .logo-spark { stroke-dasharray: 1; stroke-dashoffset: 1; animation: drawLine 0.6s ease 0.9s forwards; }
+      .logo-dot   { transform-box: fill-box; transform-origin: center; opacity: 0; animation: dotPop 0.4s ease 1.4s forwards; }
+      .boot-title { opacity: 0; animation: slideUp 0.5s ease 1.0s forwards; }
+      .boot-sub   { opacity: 0; animation: fadeIn 0.5s ease 1.3s forwards; }
+      .boot-credit { opacity: 0; animation: fadeIn 0.6s ease 1.5s forwards; }
+      .boot-halo  { position: absolute; width: 320px; height: 320px; border-radius: 9999px; background: radial-gradient(circle, rgba(255,255,255,0.35), rgba(255,255,255,0) 70%); animation: haloPulse 2.4s ease-in-out infinite; }
+      .boot-bar   { width: 120px; height: 3px; border-radius: 9999px; background: rgba(255,255,255,0.25); overflow: hidden; opacity: 0; animation: fadeIn 0.4s ease 1.4s forwards; }
+      .boot-bar span { display: block; height: 100%; background: #fff; border-radius: 9999px; animation: loadBar 1.4s ease-in-out 1.5s both; }
     `}</style>
   );
 }
 
 /* ===================================================================== */
-/*  BOOT SCREEN                                                           */
+/*  LOGO + BOOT SCREEN                                                    */
 /* ===================================================================== */
+function CooachLogo({ size = 120, leaf = "#ffffff", vein = "#10b981", spark = "#ffffff", animated = true }) {
+  return (
+    <svg viewBox="30 8 150 215" width={size} height={size * 215 / 150} aria-label="CooachIA" role="img">
+      <g className={animated ? "logo-leaf" : ""} style={{ transformOrigin: "80px 130px" }}>
+        <path d="M120 40 C140 100, 100 180, 40 210 C70 150, 80 100, 120 40 Z" fill={leaf} opacity="0.2" />
+        <path d="M110 50 C130 105, 95 170, 45 200 C75 145, 80 100, 110 50 Z" fill={leaf} />
+      </g>
+      <path className={animated ? "logo-vein" : ""} pathLength="1"
+        d="M110 50 C90 110, 70 160, 45 200" stroke={vein} strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.9" />
+      <path className={animated ? "logo-spark" : ""} pathLength="1"
+        d="M150 20 L135 75 L165 85 L145 140" fill="none" stroke={spark} strokeWidth="10" strokeLinecap="round" strokeLinejoin="round" />
+      <circle className={animated ? "logo-dot" : ""} cx="150" cy="20" r="5" fill={spark} />
+    </svg>
+  );
+}
+
 function BootScreen() {
   return (
-    <div className="fixed inset-0 bg-emerald-500 flex flex-col items-center justify-center">
+    <div className="fixed inset-0 bg-emerald-500 flex flex-col items-center justify-center overflow-hidden">
       <GlobalStyles />
-      <div className="animate-pop-in flex flex-col items-center gap-4">
-        <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center shadow-2xl">
-          <span className="text-4xl">🥗</span>
-        </div>
-        <div className="text-center">
-          <h1 className="text-white text-3xl font-extrabold tracking-tight">Cooach<span className="text-emerald-200">IA</span></h1>
-          <p className="text-emerald-100 text-sm mt-1">Tu coach nutricional con IA</p>
-        </div>
+      <div className="boot-halo" />
+      <div className="relative flex flex-col items-center">
+        <CooachLogo size={112} />
+        <h1 className="boot-title text-white text-4xl font-extrabold tracking-tight mt-5">Cooach<span className="text-emerald-200">IA</span></h1>
+        <p className="boot-sub text-emerald-100 text-sm mt-1.5">Tu coach nutricional con IA</p>
+        <div className="boot-bar mt-8"><span /></div>
       </div>
-      <div className="absolute bottom-16 flex gap-1.5">
-        <span className="w-2 h-2 bg-white/40 rounded-full animate-bounce" style={{animationDelay:"0ms"}} />
-        <span className="w-2 h-2 bg-white/60 rounded-full animate-bounce" style={{animationDelay:"150ms"}} />
-        <span className="w-2 h-2 bg-white/80 rounded-full animate-bounce" style={{animationDelay:"300ms"}} />
-      </div>
+      <a href="https://consultatia.com.ar/" target="_blank" rel="noopener noreferrer"
+        className="boot-credit absolute bottom-[max(2rem,env(safe-area-inset-bottom))] flex flex-col items-center gap-1">
+        <span className="text-[11px] text-emerald-100/80 font-medium tracking-wide">Powered by</span>
+        <span className="text-base font-extrabold tracking-tight text-white" style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}>
+          CONSULTAT<span className="text-blue-200">IA</span>
+        </span>
+      </a>
     </div>
   );
 }
@@ -546,8 +577,10 @@ function HomeTab({ profile, pantry, recipes, setTab }) {
             </h1>
           </div>
           <button onClick={() => setTab("profile")}
-            className="w-11 h-11 rounded-2xl bg-emerald-500 flex items-center justify-center shadow-md shadow-emerald-200">
-            <User className="w-5 h-5 text-white" />
+            className="w-11 h-11 rounded-2xl bg-emerald-500 flex items-center justify-center shadow-md shadow-emerald-200 overflow-hidden">
+            {profile?.photo
+              ? <img src={profile.photo} alt="" className="w-full h-full object-cover" />
+              : <User className="w-5 h-5 text-white" />}
           </button>
         </div>
       </div>
@@ -1135,6 +1168,18 @@ function EmptyRecipes() {
 /* ===================================================================== */
 function ProfileTab({ profile, saveProfile, showToast }) {
   const [editing, setEditing] = useState(false);
+  const photoInput = useRef(null);
+
+  async function handleAvatar(file) {
+    if (!file) return;
+    try {
+      const photo = await fileToAvatar(file);
+      saveProfile({ ...profile, photo });
+      showToast("Foto actualizada");
+    } catch {
+      showToast("No se pudo cargar la foto", "error");
+    }
+  }
 
   if (editing) {
     return (
@@ -1161,12 +1206,26 @@ function ProfileTab({ profile, saveProfile, showToast }) {
       {/* Profile Hero Card */}
       <div className="mx-5 mb-4 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-3xl p-5 text-white shadow-xl shadow-emerald-200">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center text-3xl">
-            {profile?.gender === "femenino" ? "👩" : "👨"}
-          </div>
+          <button type="button" onClick={() => photoInput.current?.click()} aria-label="Cambiar foto de perfil"
+            className="press relative w-20 h-20 shrink-0">
+            <div className="w-20 h-20 bg-white/20 rounded-3xl flex items-center justify-center text-4xl overflow-hidden ring-2 ring-white/40">
+              {profile?.photo
+                ? <img src={profile.photo} alt="Foto de perfil" className="w-full h-full object-cover" />
+                : (profile?.gender === "femenino" ? "👩" : "👨")}
+            </div>
+            <span className="absolute -bottom-1 -right-1 w-7 h-7 bg-white rounded-full flex items-center justify-center shadow-md">
+              <Camera className="w-4 h-4 text-emerald-600" />
+            </span>
+          </button>
+          <input ref={photoInput} type="file" accept="image/*" className="hidden"
+            onChange={e => { handleAvatar(e.target.files[0]); e.target.value = ""; }} />
           <div>
             <h2 className="text-xl font-extrabold">{profile?.name}</h2>
             <p className="text-emerald-100 text-sm">{profile?.age} años · {profile?.weight}kg · {profile?.height}cm</p>
+            {profile?.photo && (
+              <button onClick={() => { saveProfile({ ...profile, photo: null }); showToast("Foto eliminada"); }}
+                className="text-xs text-emerald-100/80 underline mt-1">Quitar foto</button>
+            )}
           </div>
         </div>
         {goalData && (
@@ -1333,6 +1392,28 @@ function Toast({ toast }) {
 /* ===================================================================== */
 /*  UTILS                                                                 */
 /* ===================================================================== */
+function fileToAvatar(file, size = 256) {
+  return new Promise((res, rej) => {
+    const reader = new FileReader();
+    reader.onerror = () => rej(new Error("Read failed"));
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = () => rej(new Error("Image load failed"));
+      img.onload = () => {
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2;
+        const sy = (img.height - side) / 2;
+        const canvas = document.createElement("canvas");
+        canvas.width = size; canvas.height = size;
+        canvas.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, size, size);
+        res(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function fileToBase64(file) {
   return new Promise((res, rej) => {
     const MAX_PX = 1200;
