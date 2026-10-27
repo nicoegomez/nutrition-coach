@@ -10,11 +10,55 @@ import {
 } from "lucide-react";
 
 /* ===================================================================== */
-/*  CLAUDE API                                                            */
+/*  AI API  (Gemini si hay key de Gemini; si no, Claude)                  */
 /* ===================================================================== */
-async function callClaude(systemPrompt, userContent) {
-  const key = process.env.REACT_APP_ANTHROPIC_KEY;
-  if (!key) throw new Error("API key not configured");
+// El contenido se arma en formato neutro:
+//   string  |  [{ type: "text", text }, { type: "image", mime, data(base64) }]
+const GEMINI_MODELS = [process.env.REACT_APP_GEMINI_MODEL || "gemini-2.5-flash", "gemini-3.8-flash"];
+
+function toParts(content) {
+  return typeof content === "string" ? [{ type: "text", text: content }] : content;
+}
+
+async function callGemini(systemPrompt, content, key) {
+  const parts = toParts(content).map(p =>
+    p.type === "image"
+      ? { inlineData: { mimeType: p.mime || "image/jpeg", data: p.data } }
+      : { text: p.text }
+  );
+  let lastErr;
+  for (const model of [...new Set(GEMINI_MODELS)]) {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: "user", parts }],
+          generationConfig: { responseMimeType: "application/json", maxOutputTokens: 8192, temperature: 0.7 },
+        }),
+      }
+    );
+    if (response.ok) {
+      const data = await response.json();
+      const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+      if (!text) throw new Error(data?.promptFeedback?.blockReason ? "La IA no pudo procesar esta solicitud" : "La IA devolvio una respuesta vacia");
+      return text;
+    }
+    const err = await response.json().catch(() => ({}));
+    lastErr = new Error(err?.error?.message || `HTTP ${response.status}`);
+    if (response.status !== 404) throw lastErr; // 404 = modelo no disponible, probamos el siguiente
+  }
+  throw lastErr;
+}
+
+async function callClaude(systemPrompt, content, key) {
+  const blocks = toParts(content).map(p =>
+    p.type === "image"
+      ? { type: "image", source: { type: "base64", media_type: p.mime || "image/jpeg", data: p.data } }
+      : { type: "text", text: p.text }
+  );
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -27,7 +71,7 @@ async function callClaude(systemPrompt, userContent) {
       model: "claude-sonnet-4-6",
       max_tokens: 4096,
       system: systemPrompt,
-      messages: [{ role: "user", content: userContent }],
+      messages: [{ role: "user", content: blocks }],
     }),
   });
   if (!response.ok) {
@@ -36,6 +80,14 @@ async function callClaude(systemPrompt, userContent) {
   }
   const data = await response.json();
   return data.content[0].text;
+}
+
+async function callAI(systemPrompt, content) {
+  const geminiKey = process.env.REACT_APP_GEMINI_KEY;
+  if (geminiKey) return callGemini(systemPrompt, content, geminiKey);
+  const claudeKey = process.env.REACT_APP_ANTHROPIC_KEY;
+  if (claudeKey) return callClaude(systemPrompt, content, claudeKey);
+  throw new Error("Falta configurar la API key de IA");
 }
 
 function parseJSON(text) {
@@ -97,6 +149,8 @@ const TRAINING = [
   { id: "ninguno",     label: "Sin entrenamiento", icon: "😴" },
   { id: "cardio",      label: "Cardio",             icon: "🏃" },
   { id: "fuerza",      label: "Fuerza",             icon: "🏋️" },
+  { id: "funcional",   label: "Funcional",          icon: "🤸" },
+  { id: "cross",       label: "Cross",              icon: "🔥" },
   { id: "mixto",       label: "Mixto",              icon: "⚡" },
   { id: "yoga",        label: "Yoga / pilates",     icon: "🧘" },
   { id: "deporte",     label: "Deporte en equipo",  icon: "⚽" },
@@ -109,6 +163,65 @@ const GOALS = [
   { id: "energia",     label: "Mas energia",    icon: "⚡" },
   { id: "salud",       label: "Mejorar salud",  icon: "❤️" },
 ];
+
+// Compatibilidad: perfiles viejos guardaban un solo valor (goal / training como string)
+function getGoals(profile) {
+  if (Array.isArray(profile?.goals)) return profile.goals;
+  return profile?.goal ? [profile.goal] : [];
+}
+function getTraining(profile) {
+  const t = profile?.training;
+  if (Array.isArray(t)) return t;
+  return t ? [t] : [];
+}
+function labelsOf(list, ids) {
+  return ids.map(id => list.find(x => x.id === id)).filter(Boolean);
+}
+// Alterna un id en una lista; "exclusive" (ej. "ninguno") no se mezcla con los demas
+function toggleIn(list, id, exclusive) {
+  if (exclusive && id === exclusive) return [exclusive];
+  const base = exclusive ? list.filter(x => x !== exclusive) : list;
+  return base.includes(id) ? base.filter(x => x !== id) : [...base, id];
+}
+
+// Categoria automatica para ingredientes cargados a mano
+const CATEGORY_KEYWORDS = {
+  proteina:     ["pollo","pechuga","carne","bife","vacio","cerdo","pescado","merluza","atun","salmon","huevo","jamon","milanesa","hamburguesa","pavo","tofu","seitan","chorizo","camaron","langostino","nalga","peceto","lomo"],
+  lacteo:       ["leche","queso","yogur","yogurt","crema","ricota","muzzarella","mozzarella","requeson","dulce de leche"],
+  verdura:      ["tomate","lechuga","cebolla","zanahoria","zapallo","zapallito","brocoli","espinaca","morron","pimiento","ajo","pepino","berenjena","choclo","coliflor","repollo","acelga","apio","rucula","calabacin","remolacha","hongo","champinon","verdeo","puerro"],
+  fruta:        ["manzana","banana","naranja","limon","pera","frutilla","uva","durazno","sandia","melon","mandarina","kiwi","anana","ananá","cereza","arandano","mango","ciruela","pomelo"],
+  grasa:        ["aceite","manteca","palta","aguacate","nuez","nueces","almendra","mani","aceituna","semilla","chia","girasol","mayonesa"],
+  carbohidrato: ["arroz","fideo","pasta","pan","harina","avena","papa","patata","batata","lenteja","garbanzo","poroto","quinoa","galletita","cereal","tostada","tapa","polenta","maiz","ñoqui","noqui","azucar","miel"],
+};
+function stripAccents(t) { return t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
+function guessCategory(name) {
+  const n = stripAccents(name);
+  for (const [cat, words] of Object.entries(CATEGORY_KEYWORDS)) {
+    if (words.some(w => n.includes(stripAccents(w)))) return cat;
+  }
+  return "otros";
+}
+const UNIT_ALIASES = { kg: "kg", kilo: "kg", kilos: "kg", g: "g", gr: "g", grs: "g", gramo: "g", gramos: "g", l: "l", lt: "l", lts: "l", litro: "l", litros: "l", ml: "ml", u: "unidades", un: "unidades", unidad: "unidades", unidades: "unidades" };
+// "pollo 500g, 2 tomates, 1 kg de arroz" -> [{name, quantity, unit, category}]
+function parseIngredientList(text) {
+  return text.split(/[\n,;]+/).map(t => t.trim()).filter(Boolean).map(token => {
+    let name = token, quantity = "1", unit = "unidades";
+    let m = token.match(/^(\d+(?:[.,]\d+)?)\s*([a-zA-Z]+)?\s+(?:de\s+)?(.+)$/);
+    if (m) {
+      const u = m[2] ? UNIT_ALIASES[m[2].toLowerCase()] : null;
+      if (u) { quantity = m[1].replace(",", "."); unit = u; name = m[3]; }
+      else { quantity = m[1].replace(",", "."); name = (m[2] ? m[2] + " " : "") + m[3]; }
+    } else {
+      m = token.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)\s*([a-zA-Z]+)?$/);
+      if (m) {
+        const u = m[3] ? UNIT_ALIASES[m[3].toLowerCase()] : null;
+        if (u || !m[3]) { name = m[1]; quantity = m[2].replace(",", "."); unit = u || "unidades"; }
+      }
+    }
+    name = name.trim().replace(/^\w/, c => c.toUpperCase());
+    return { name, quantity, unit, category: guessCategory(name) };
+  }).filter(i => i.name);
+}
 
 const RESTRICTIONS = [
   { id: "ninguna",     label: "Ninguna" },
@@ -434,26 +547,30 @@ function StepLifestyle({ data, onNext }) {
 }
 
 function StepTraining({ data, onNext }) {
-  const [selected, setSelected] = useState(data.training || "");
+  const [selected, setSelected] = useState(getTraining(data));
   return (
     <div className="flex flex-col gap-4 animate-slide-up">
       <div>
         <h2 className="text-2xl font-extrabold text-gray-900 mb-1">Como entrenás?</h2>
-        <p className="text-gray-500 text-sm">El tipo de entrenamiento afecta tus necesidades nutricionales</p>
+        <p className="text-gray-500 text-sm">Elegí todo lo que hagas. El entrenamiento afecta tus necesidades nutricionales</p>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        {TRAINING.map(t => (
-          <button key={t.id} onClick={() => setSelected(t.id)}
-            className={`press p-4 rounded-2xl border-2 text-center transition-all ${
-              selected === t.id ? "border-emerald-500 bg-emerald-50" : "border-gray-100 bg-gray-50"
-            }`}>
-            <span className="text-2xl">{t.icon}</span>
-            <p className={`mt-1 text-xs font-semibold ${selected === t.id ? "text-emerald-700" : "text-gray-600"}`}>{t.label}</p>
-          </button>
-        ))}
+        {TRAINING.map(t => {
+          const active = selected.includes(t.id);
+          return (
+            <button key={t.id} onClick={() => setSelected(prev => toggleIn(prev, t.id, "ninguno"))}
+              className={`press relative p-4 rounded-2xl border-2 text-center transition-all ${
+                active ? "border-emerald-500 bg-emerald-50" : "border-gray-100 bg-gray-50"
+              }`}>
+              {active && <CheckCircle className="absolute top-2 right-2 w-4 h-4 text-emerald-500" />}
+              <span className="text-2xl">{t.icon}</span>
+              <p className={`mt-1 text-xs font-semibold ${active ? "text-emerald-700" : "text-gray-600"}`}>{t.label}</p>
+            </button>
+          );
+        })}
       </div>
-      <button onClick={() => onNext({ training: selected })} disabled={!selected}
-        className={`press w-full rounded-2xl py-4 font-bold text-base mt-2 ${selected ? "bg-emerald-500 text-white shadow-lg shadow-emerald-200" : "bg-gray-100 text-gray-400"}`}>
+      <button onClick={() => onNext({ training: selected })} disabled={selected.length === 0}
+        className={`press w-full rounded-2xl py-4 font-bold text-base mt-2 ${selected.length ? "bg-emerald-500 text-white shadow-lg shadow-emerald-200" : "bg-gray-100 text-gray-400"}`}>
         Continuar
       </button>
     </div>
@@ -461,28 +578,31 @@ function StepTraining({ data, onNext }) {
 }
 
 function StepGoals({ data, onNext }) {
-  const [selected, setSelected] = useState(data.goal || "");
+  const [selected, setSelected] = useState(getGoals(data));
   return (
     <div className="flex flex-col gap-4 animate-slide-up">
       <div>
-        <h2 className="text-2xl font-extrabold text-gray-900 mb-1">Tu objetivo principal</h2>
-        <p className="text-gray-500 text-sm">Que queres lograr con tu alimentacion?</p>
+        <h2 className="text-2xl font-extrabold text-gray-900 mb-1">Tus objetivos</h2>
+        <p className="text-gray-500 text-sm">Que queres lograr con tu alimentacion? Podés elegir más de uno</p>
       </div>
       <div className="flex flex-col gap-2">
-        {GOALS.map(g => (
-          <button key={g.id} onClick={() => setSelected(g.id)}
-            className={`press flex items-center gap-4 p-4 rounded-2xl border-2 text-left transition-all ${
-              selected === g.id ? "border-emerald-500 bg-emerald-50" : "border-gray-100 bg-gray-50"
-            }`}>
-            <span className="text-2xl">{g.icon}</span>
-            <span className={`font-semibold text-sm flex-1 ${selected === g.id ? "text-emerald-700" : "text-gray-800"}`}>{g.label}</span>
-            {selected === g.id && <CheckCircle className="w-5 h-5 text-emerald-500 flex-shrink-0" />}
-          </button>
-        ))}
+        {GOALS.map(g => {
+          const active = selected.includes(g.id);
+          return (
+            <button key={g.id} onClick={() => setSelected(prev => toggleIn(prev, g.id))}
+              className={`press flex items-center gap-4 p-4 rounded-2xl border-2 text-left transition-all ${
+                active ? "border-emerald-500 bg-emerald-50" : "border-gray-100 bg-gray-50"
+              }`}>
+              <span className="text-2xl">{g.icon}</span>
+              <span className={`font-semibold text-sm flex-1 ${active ? "text-emerald-700" : "text-gray-800"}`}>{g.label}</span>
+              {active && <CheckCircle className="w-5 h-5 text-emerald-500 flex-shrink-0" />}
+            </button>
+          );
+        })}
       </div>
-      <button onClick={() => onNext({ goal: selected })} disabled={!selected}
-        className={`press w-full rounded-2xl py-4 font-bold text-base mt-2 ${selected ? "bg-emerald-500 text-white shadow-lg shadow-emerald-200" : "bg-gray-100 text-gray-400"}`}>
-        Continuar
+      <button onClick={() => onNext({ goals: selected })} disabled={selected.length === 0}
+        className={`press w-full rounded-2xl py-4 font-bold text-base mt-2 ${selected.length ? "bg-emerald-500 text-white shadow-lg shadow-emerald-200" : "bg-gray-100 text-gray-400"}`}>
+        Continuar{selected.length > 1 ? ` (${selected.length})` : ""}
       </button>
     </div>
   );
@@ -538,7 +658,7 @@ function StepDone({ data, onNext }) {
       </div>
       <div className="w-full max-w-xs space-y-2 text-left">
         {[
-          { icon: "📸", text: "Fotografiá tu ticket de supermercado" },
+          { icon: "📸", text: "Escaneá tu ticket o cargá ingredientes a mano" },
           { icon: "🧠", text: "La IA detecta los ingredientes" },
           { icon: "👨‍🍳", text: "Recetas adaptadas a tus objetivos" },
         ].map((item, i) => (
@@ -589,9 +709,9 @@ function HomeTab({ profile, pantry, recipes, setTab }) {
       <div className="mx-5 rounded-3xl bg-gradient-to-br from-emerald-500 to-emerald-600 p-5 shadow-xl shadow-emerald-200 mb-5">
         <div className="flex items-start justify-between mb-4">
           <div>
-            <p className="text-emerald-100 text-xs font-semibold uppercase tracking-wider mb-1">Tu objetivo</p>
-            <p className="text-white font-bold text-lg">
-              {GOALS.find(g => g.id === profile?.goal)?.label || "Alimentacion saludable"}
+            <p className="text-emerald-100 text-xs font-semibold uppercase tracking-wider mb-1">{getGoals(profile).length > 1 ? "Tus objetivos" : "Tu objetivo"}</p>
+            <p className="text-white font-bold text-lg leading-snug">
+              {labelsOf(GOALS, getGoals(profile)).map(g => g.label).join(" + ") || "Alimentacion saludable"}
             </p>
           </div>
           <div className="bg-white/20 rounded-2xl p-2.5">
@@ -680,7 +800,7 @@ function HomeTab({ profile, pantry, recipes, setTab }) {
           <div>
             <p className="font-bold text-amber-800 text-sm">Comenzá aca</p>
             <p className="text-amber-600 text-xs mt-0.5 leading-relaxed">
-              Fotografiá tu ticket de supermercado para cargar tus ingredientes automaticamente.
+              Escaneá tu ticket de supermercado o agregá tus ingredientes a mano para empezar.
             </p>
           </div>
         </div>
@@ -704,12 +824,12 @@ function PantryTab({ pantry, savePantry, showToast }) {
     setLoading(true);
     try {
       const b64 = await fileToBase64(file);
-      const result = await callClaude(
+      const result = await callAI(
         `Sos un asistente de nutricion. Analiza la imagen y extrae todos los alimentos/ingredientes que ves.
          Para cada uno determina su categoria: proteina, carbohidrato, verdura, fruta, lacteo, grasa, u otros.
          Devuelve SOLO JSON con este formato exacto:
          {"items": [{"name": "nombre", "quantity": "cantidad estimada o null", "category": "categoria", "unit": "kg/g/l/ml/unidades/null"}]}`,
-        [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
+        [{ type: "image", mime: "image/jpeg", data: b64 },
          { type: "text", text: "Extrae todos los ingredientes de este ticket o imagen de supermercado." }]
       );
       const parsed = parseJSON(result);
@@ -812,10 +932,11 @@ function PantryTab({ pantry, savePantry, showToast }) {
       )}
 
       {showAddModal && (
-        <AddModal onClose={() => setShowAddModal(false)} onAdd={item => {
-          savePantry([...pantry, { ...item, id: Date.now() }]);
+        <AddModal onClose={() => setShowAddModal(false)} onAdd={items => {
+          const stamp = Date.now();
+          savePantry([...pantry, ...items.map((it, i) => ({ ...it, id: stamp + i }))]);
           setShowAddModal(false);
-          showToast("Ingrediente agregado");
+          showToast(items.length === 1 ? "Ingrediente agregado" : `${items.length} ingredientes agregados`);
         }} />
       )}
     </div>
@@ -853,64 +974,113 @@ function EmptyPantry({ hasAny }) {
         {hasAny ? "Sin resultados" : "Tu despensa esta vacia"}
       </p>
       <p className="text-gray-400 text-sm max-w-xs">
-        {hasAny ? "Proba con otro filtro o busqueda" : "Escanea tu ticket de supermercado para agregar ingredientes automaticamente"}
+        {hasAny ? "Proba con otro filtro o busqueda" : "Escanea tu ticket o toca \"Agregar manual\" para escribir tus ingredientes"}
       </p>
     </div>
   );
 }
 
 function AddModal({ onClose, onAdd }) {
+  const [mode, setMode] = useState("quick");
+  // modo rapido
+  const [text, setText] = useState("");
+  const parsed = parseIngredientList(text);
+  // modo individual
   const [name, setName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [unit, setUnit] = useState("unidades");
   const [category, setCategory] = useState("otros");
+  const [catTouched, setCatTouched] = useState(false);
+
+  function onNameChange(v) {
+    setName(v);
+    if (!catTouched) setCategory(guessCategory(v));
+  }
+
+  const inputCls = "w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:border-transparent";
+  const labelCls = "text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5";
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-end justify-center" onClick={onClose}>
-      <div className="bg-white rounded-t-3xl p-5 w-full max-w-[500px] animate-slide-up" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="font-extrabold text-gray-900 text-lg">Agregar ingrediente</h3>
+      <div className="bg-white rounded-t-3xl p-5 w-full max-w-[500px] max-h-[90vh] overflow-y-auto animate-slide-up" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-extrabold text-gray-900 text-lg">Agregar ingredientes</h3>
           <button onClick={onClose} className="p-2 rounded-full bg-gray-100"><X className="w-4 h-4 text-gray-600" /></button>
         </div>
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">Nombre</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="Ej: Pechuga de pollo"
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:border-transparent" />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">Cantidad</label>
-              <input value={quantity} onChange={e => setQuantity(e.target.value)} placeholder="1"
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">Unidad</label>
-              <select value={unit} onChange={e => setUnit(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400">
-                {["unidades","kg","g","l","ml"].map(u => <option key={u}>{u}</option>)}
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">Categoria</label>
-            <div className="grid grid-cols-4 gap-1.5">
-              {Object.entries(CATEGORIES).map(([id, cat]) => (
-                <button key={id} onClick={() => setCategory(id)}
-                  className={`press py-2 rounded-xl text-xs font-semibold transition-all ${
-                    category === id ? `${cat.bg} ${cat.text} ring-2 ring-offset-1 ring-emerald-400` : "bg-gray-50 text-gray-500"
-                  }`}>
-                  {cat.icon}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-gray-400 mt-1 text-center">{CATEGORIES[category]?.label}</p>
-          </div>
-          <button onClick={() => name && onAdd({ name, quantity, unit, category })} disabled={!name}
-            className={`press w-full rounded-2xl py-3.5 font-bold text-sm mt-1 ${name ? "bg-emerald-500 text-white" : "bg-gray-100 text-gray-400"}`}>
-            Agregar
-          </button>
+
+        <div className="grid grid-cols-2 gap-1 bg-gray-100 rounded-2xl p-1 mb-4">
+          {[{ id: "quick", label: "Varios a la vez" }, { id: "single", label: "Uno solo" }].map(t => (
+            <button key={t.id} onClick={() => setMode(t.id)}
+              className={`press py-2 rounded-xl text-xs font-bold transition-all ${mode === t.id ? "bg-white text-emerald-600 shadow-sm" : "text-gray-500"}`}>
+              {t.label}
+            </button>
+          ))}
         </div>
+
+        {mode === "quick" ? (
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className={labelCls}>Escribí tus ingredientes</label>
+              <textarea value={text} onChange={e => setText(e.target.value)} rows={4} autoFocus
+                placeholder={"Ej: pollo 500g, 2 tomates, 1 kg de arroz, leche 1 l, huevos 6"}
+                className={inputCls + " resize-none"} />
+              <p className="text-xs text-gray-400 mt-1">Separalos con coma o salto de línea. Cantidad y unidad son opcionales.</p>
+            </div>
+            {parsed.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {parsed.map((it, i) => {
+                  const cat = CATEGORIES[it.category] || CATEGORIES.otros;
+                  return (
+                    <span key={i} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold ${cat.bg} ${cat.text}`}>
+                      {cat.icon} {it.name}<span className="opacity-60">· {it.quantity} {it.unit}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            <button onClick={() => parsed.length && onAdd(parsed)} disabled={!parsed.length}
+              className={`press w-full rounded-2xl py-3.5 font-bold text-sm mt-1 ${parsed.length ? "bg-emerald-500 text-white" : "bg-gray-100 text-gray-400"}`}>
+              {parsed.length ? `Agregar ${parsed.length} ingrediente${parsed.length > 1 ? "s" : ""}` : "Agregar"}
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className={labelCls}>Nombre</label>
+              <input value={name} onChange={e => onNameChange(e.target.value)} placeholder="Ej: Pechuga de pollo" className={inputCls} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className={labelCls}>Cantidad</label>
+                <input value={quantity} onChange={e => setQuantity(e.target.value)} placeholder="1" className={inputCls} />
+              </div>
+              <div>
+                <label className={labelCls}>Unidad</label>
+                <select value={unit} onChange={e => setUnit(e.target.value)} className={inputCls}>
+                  {["unidades","kg","g","l","ml"].map(u => <option key={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className={labelCls}>Categoria</label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {Object.entries(CATEGORIES).map(([id, cat]) => (
+                  <button key={id} onClick={() => { setCategory(id); setCatTouched(true); }}
+                    className={`press py-2 rounded-xl text-xs font-semibold transition-all ${
+                      category === id ? `${cat.bg} ${cat.text} ring-2 ring-offset-1 ring-emerald-400` : "bg-gray-50 text-gray-500"
+                    }`}>
+                    {cat.icon}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-1 text-center">{CATEGORIES[category]?.label}</p>
+            </div>
+            <button onClick={() => name.trim() && onAdd([{ name: name.trim(), quantity: quantity || "1", unit, category }])} disabled={!name.trim()}
+              className={`press w-full rounded-2xl py-3.5 font-bold text-sm mt-1 ${name.trim() ? "bg-emerald-500 text-white" : "bg-gray-100 text-gray-400"}`}>
+              Agregar
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -932,9 +1102,11 @@ function RecipesTab({ profile, pantry, recipes, saveRecipes, savePantry, showToa
     setLoading(true);
     try {
       const ingredientsList = pantry.map(i => `${i.name} (${i.quantity} ${i.unit})`).join(", ");
-      const result = await callClaude(
+      const goalsTxt = labelsOf(GOALS, getGoals(profile)).map(g => g.label).join(" + ") || "alimentacion saludable";
+      const trainTxt = labelsOf(TRAINING, getTraining(profile)).map(t => t.label).join(", ") || "sin datos";
+      const result = await callAI(
         `Sos un chef y nutricionista experto. Crea 3 recetas nutritivas usando los ingredientes disponibles.
-         El usuario tiene este perfil: objetivo=${profile?.goal}, restricciones=${profile?.restrictions?.join(",")}, actividad=${profile?.activity}.
+         El usuario tiene este perfil: objetivos=${goalsTxt} (si son varios, busca un equilibrio entre ellos), entrenamiento=${trainTxt}, restricciones=${profile?.restrictions?.join(",")}, actividad=${profile?.activity}.
          Devuelve SOLO JSON con este formato exacto:
          {"recipes": [{"name": "nombre", "description": "descripcion breve", "time": "30 min", "difficulty": "Facil", "servings": 2, "ingredients": ["500g pollo", "2 tomates"], "steps": ["paso 1", "paso 2"], "macros": {"calorias": 450, "proteinas": 35, "carbohidratos": 40, "grasas": 12}, "tags": ["alto en proteina"]}]}`,
         `Ingredientes disponibles: ${ingredientsList}\n\nCrea 3 recetas variadas, nutritivas y faciles de preparar.`
@@ -1191,9 +1363,9 @@ function ProfileTab({ profile, saveProfile, showToast }) {
     );
   }
 
-  const goalData     = GOALS.find(g => g.id === profile?.goal);
+  const goalList     = labelsOf(GOALS, getGoals(profile));
   const activityData = ACTIVITY.find(a => a.id === profile?.activity);
-  const trainingData = TRAINING.find(t => t.id === profile?.training);
+  const trainingList = labelsOf(TRAINING, getTraining(profile));
 
   return (
     <div className="pb-28 animate-fade-in">
@@ -1228,12 +1400,15 @@ function ProfileTab({ profile, saveProfile, showToast }) {
             )}
           </div>
         </div>
-        {goalData && (
-          <div className="mt-4 bg-white/15 rounded-2xl p-3 flex items-center gap-3">
-            <span className="text-2xl">{goalData.icon}</span>
-            <div>
-              <p className="text-xs text-emerald-100">Objetivo</p>
-              <p className="font-bold text-sm">{goalData.label}</p>
+        {goalList.length > 0 && (
+          <div className="mt-4 bg-white/15 rounded-2xl p-3">
+            <p className="text-xs text-emerald-100 mb-2">{goalList.length > 1 ? "Objetivos" : "Objetivo"}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {goalList.map(g => (
+                <span key={g.id} className="inline-flex items-center gap-1.5 bg-white/20 rounded-full px-3 py-1 text-sm font-bold">
+                  <span>{g.icon}</span>{g.label}
+                </span>
+              ))}
             </div>
           </div>
         )}
@@ -1243,7 +1418,7 @@ function ProfileTab({ profile, saveProfile, showToast }) {
       <div className="px-5 flex flex-col gap-3 mb-4">
         <ProfileSection title="Actividad fisica">
           <ProfileRow label="Nivel de actividad" value={activityData?.label || "—"} />
-          <ProfileRow label="Entrenamiento" value={trainingData ? `${trainingData.icon} ${trainingData.label}` : "—"} />
+          <ProfileRow label="Entrenamiento" value={trainingList.length ? trainingList.map(t => `${t.icon} ${t.label}`).join(", ") : "—"} />
         </ProfileSection>
 
         <ProfileSection title="Alimentacion">
@@ -1309,18 +1484,42 @@ function EditProfile({ profile, onSave, onCancel }) {
         </div>
 
         <div>
-          <label className="text-sm font-semibold text-gray-700 block mb-2">Objetivo</label>
+          <label className="text-sm font-semibold text-gray-700 block mb-1">Objetivos</label>
+          <p className="text-xs text-gray-400 mb-2">Podés elegir más de uno</p>
           <div className="flex flex-col gap-2">
-            {GOALS.map(g => (
-              <button key={g.id} onClick={() => setLocal(d=>({...d,goal:g.id}))}
-                className={`press flex items-center gap-3 p-3.5 rounded-2xl border-2 text-left transition-all ${
-                  local.goal === g.id ? "border-emerald-500 bg-emerald-50" : "border-gray-100 bg-gray-50"
-                }`}>
-                <span className="text-xl">{g.icon}</span>
-                <span className={`font-semibold text-sm flex-1 ${local.goal === g.id ? "text-emerald-700" : "text-gray-700"}`}>{g.label}</span>
-                {local.goal === g.id && <CheckCircle className="w-4 h-4 text-emerald-500 ml-auto" />}
-              </button>
-            ))}
+            {GOALS.map(g => {
+              const active = getGoals(local).includes(g.id);
+              return (
+                <button key={g.id} onClick={() => setLocal(d => ({ ...d, goals: toggleIn(getGoals(d), g.id) }))}
+                  className={`press flex items-center gap-3 p-3.5 rounded-2xl border-2 text-left transition-all ${
+                    active ? "border-emerald-500 bg-emerald-50" : "border-gray-100 bg-gray-50"
+                  }`}>
+                  <span className="text-xl">{g.icon}</span>
+                  <span className={`font-semibold text-sm flex-1 ${active ? "text-emerald-700" : "text-gray-700"}`}>{g.label}</span>
+                  {active && <CheckCircle className="w-4 h-4 text-emerald-500 ml-auto" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <label className="text-sm font-semibold text-gray-700 block mb-1">Entrenamiento</label>
+          <p className="text-xs text-gray-400 mb-2">Elegí todo lo que hagas</p>
+          <div className="grid grid-cols-2 gap-2">
+            {TRAINING.map(t => {
+              const active = getTraining(local).includes(t.id);
+              return (
+                <button key={t.id} onClick={() => setLocal(d => ({ ...d, training: toggleIn(getTraining(d), t.id, "ninguno") }))}
+                  className={`press flex items-center gap-2 p-3 rounded-2xl border-2 text-left transition-all ${
+                    active ? "border-emerald-500 bg-emerald-50" : "border-gray-100 bg-gray-50"
+                  }`}>
+                  <span className="text-lg">{t.icon}</span>
+                  <span className={`font-semibold text-xs flex-1 ${active ? "text-emerald-700" : "text-gray-600"}`}>{t.label}</span>
+                  {active && <CheckCircle className="w-4 h-4 text-emerald-500" />}
+                </button>
+              );
+            })}
           </div>
         </div>
 
